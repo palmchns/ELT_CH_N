@@ -2,8 +2,8 @@
 set -e
 
 # ==============================================================================
-# PROJECT: OmniCorp ELT Data Stack
-# DESCRIPTION: One-Click Setup for Postgres, Metabase, Prefect, and Jupyter
+# PROJECT: OmniCorp ELT Data Stack (V2 - Conflict Free)
+# DESCRIPTION: One-Click Setup with unique ports and container names
 # ==============================================================================
 
 PROJECT_DIR="omnicorp_data_stack"
@@ -11,6 +11,14 @@ PROJECT_DIR="omnicorp_data_stack"
 echo "🚀 Initializing Project: $PROJECT_DIR"
 mkdir -p "$PROJECT_DIR"
 cd "$PROJECT_DIR"
+
+# ==========================================
+# 0. Auto-Cleanup (ป้องกันปัญหาชื่อซ้ำ)
+# ==========================================
+if [ -f "docker-compose.yml" ]; then
+    echo "🧹 Cleaning up existing containers..."
+    docker compose down 2>/dev/null || true
+fi
 
 # ==========================================
 # 1. Generate requirements.txt
@@ -39,22 +47,20 @@ from prefect import task, flow
 # ==========================================
 # ⚙️ Configuration & Database Setup
 # ==========================================
-DB_HOST = "postgres_dw" if os.getenv("IN_DOCKER") else "localhost"
+# เปลี่ยน Host เป็นชื่อ Container ใหม่ (omni_postgres)
+DB_HOST = "omni_postgres" if os.getenv("IN_DOCKER") else "localhost"
 DB_USER = os.getenv("POSTGRES_USER", "engineer")
 DB_PASS = os.getenv("POSTGRES_PASSWORD", "password123")
 DB_DB = os.getenv("POSTGRES_DB", "data_warehouse")
-DB_PORT = "5432" if os.getenv("IN_DOCKER") else "5435"
+DB_PORT = "5432" if os.getenv("IN_DOCKER") else "5440"
 
 PG_URI = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_DB}"
 
 # ==========================================
-# 🥉 Task 1: Extract & Load to Bronze (Postgres Raw)
+# 🥉 Task 1: Extract & Load to Bronze
 # ==========================================
 @task(log_prints=True, retries=2)
 def load_raw_to_postgres():
-    """
-    ดาวน์โหลด SQLite ลง Temp File ใน Docker -> อ่านด้วย Pandas -> โหลดเข้าตาราง _raw_ ใน Postgres
-    """
     sources = {
         "chinook": ("https://raw.githubusercontent.com/lerocha/chinook-database/master/ChinookDatabase/DataSources/Chinook_Sqlite.sqlite", 
                     ["Customer", "Track", "Genre", "Invoice", "InvoiceLine"]),
@@ -71,13 +77,11 @@ def load_raw_to_postgres():
         with tempfile.NamedTemporaryFile(suffix=".sqlite") as tmp:
             tmp.write(r.content)
             tmp.flush()
-            
             src_engine = create_engine(f"sqlite:///{tmp.name}")
             
             for table in tables:
                 print(f"⏳ Extracting raw {table}...")
                 df = pd.read_sql(f'SELECT * FROM "{table}"', src_engine)
-                
                 df.columns = [c.lower().replace(' ', '_') for c in df.columns]
                 
                 for col in df.columns:
@@ -89,18 +93,14 @@ def load_raw_to_postgres():
                 print(f"✅ {target_name} loaded: {len(df)} rows")
 
 # ==========================================
-# 🥇 Task 2: In-Database Transform (Star Schema)
+# 🥇 Task 2: In-Database Transform
 # ==========================================
 @task(log_prints=True)
 def transform_star_schema_in_db():
-    """
-    ใช้ SQL ประมวลผลจากตาราง Raw เพื่อสร้าง Star Schema ใน Postgres โดยตรง
-    """
     print("⏳ Executing In-Database Transformation for Star Schema...")
     target_engine = create_engine(PG_URI)
     
     with target_engine.begin() as conn:
-        
         # 1. DimCustomer
         conn.execute(text("DROP TABLE IF EXISTS dim_customer CASCADE;"))
         conn.execute(text("""
@@ -155,36 +155,22 @@ def transform_star_schema_in_db():
                 source_system VARCHAR(50)
             );
         """))
-        # ยอดขาย Chinook
         conn.execute(text("""
             INSERT INTO fact_sales (date_key, product_key, customer_key, quantity, unit_price, sales_amount, source_system)
-            SELECT 
-                CAST(TO_CHAR(CAST(i.invoicedate AS TIMESTAMP), 'YYYYMMDD') AS INT),
-                dp.product_key, dc.customer_key, il.quantity, il.unitprice,
-                (il.quantity * il.unitprice), 'Chinook'
-            FROM chinook_raw_invoiceline il
-            JOIN chinook_raw_invoice i ON il.invoiceid = i.invoiceid
-            LEFT JOIN dim_product dp ON dp.integration_id = 'CHN_' || il.trackid
-            LEFT JOIN dim_customer dc ON dc.integration_id = 'CHN_' || i.customerid;
+            SELECT CAST(TO_CHAR(CAST(i.invoicedate AS TIMESTAMP), 'YYYYMMDD') AS INT), dp.product_key, dc.customer_key, il.quantity, il.unitprice, (il.quantity * il.unitprice), 'Chinook'
+            FROM chinook_raw_invoiceline il JOIN chinook_raw_invoice i ON il.invoiceid = i.invoiceid LEFT JOIN dim_product dp ON dp.integration_id = 'CHN_' || il.trackid LEFT JOIN dim_customer dc ON dc.integration_id = 'CHN_' || i.customerid;
         """))
-        # ยอดขาย Northwind
         conn.execute(text("""
             INSERT INTO fact_sales (date_key, product_key, customer_key, quantity, unit_price, sales_amount, source_system)
-            SELECT 
-                CAST(TO_CHAR(CAST(o.orderdate AS TIMESTAMP), 'YYYYMMDD') AS INT),
-                dp.product_key, dc.customer_key, od.quantity, od.unitprice,
-                (od.quantity * od.unitprice), 'Northwind'
-            FROM nw_raw_order_details od
-            JOIN nw_raw_orders o ON od.orderid = o.orderid
-            LEFT JOIN dim_product dp ON dp.integration_id = 'NWD_' || od.productid
-            LEFT JOIN dim_customer dc ON dc.integration_id = 'NWD_' || o.customerid;
+            SELECT CAST(TO_CHAR(CAST(o.orderdate AS TIMESTAMP), 'YYYYMMDD') AS INT), dp.product_key, dc.customer_key, od.quantity, od.unitprice, (od.quantity * od.unitprice), 'Northwind'
+            FROM nw_raw_order_details od JOIN nw_raw_orders o ON od.orderid = o.orderid LEFT JOIN dim_product dp ON dp.integration_id = 'NWD_' || od.productid LEFT JOIN dim_customer dc ON dc.integration_id = 'NWD_' || o.customerid;
         """))
         print("✅ fact_sales created")
 
 # ==========================================
 #  Orchestration Flow
 # ==========================================
-@flow(name="One-Time OmniCorp Initial Load (Docker Optimized)")
+@flow(name="One-Time OmniCorp Initial Load")
 def main_flow():
     load_raw_to_postgres()
     transform_star_schema_in_db()
@@ -199,17 +185,10 @@ EOF
 echo "🐳 Generating Dockerfile..."
 cat << 'EOF' > Dockerfile
 FROM python:3.10-slim
-
 WORKDIR /app
-
-# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy all files
 COPY . .
-
-# Run the pipeline
 CMD ["python", "etl_pipeline.py"]
 EOF
 
@@ -221,59 +200,59 @@ cat << 'EOF' > docker-compose.yml
 version: '3.8'
 
 services:
-  # 1. Data Warehouse
-  postgres_dw:
+  # 1. Data Warehouse (Port shifted to 5440)
+  omni_postgres:
     image: postgres:15-alpine
-    container_name: postgres_dw
+    container_name: omni_postgres
     ports:
-      - "5435:5432"
+      - "5440:5432"
     environment:
       - POSTGRES_USER=engineer
       - POSTGRES_PASSWORD=password123
       - POSTGRES_DB=data_warehouse
     volumes:
-      - dw_data:/var/lib/postgresql/data
+      - omni_dw_data:/var/lib/postgresql/data
     networks:
-      - data_network
+      - omni_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U engineer -d data_warehouse"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # 2. BI Tool
-  metabase:
+  # 2. BI Tool (Port shifted to 3050)
+  omni_metabase:
     image: metabase/metabase:latest
-    container_name: metabase_chinook_northwind
+    container_name: omni_metabase
     user: "root"
     ports:
-      - "3001:3000"
+      - "3050:3000"
     depends_on:
-      postgres_dw:
+      omni_postgres:
         condition: service_healthy
     environment:                           
       - MB_DB_FILE=/metabase-data/metabase.db 
     volumes:                               
-      - metabase_data:/metabase-data
+      - omni_metabase_data:/metabase-data
     networks:
-      - data_network
+      - omni_network
 
-  # 3. Pipeline Orchestrator
-  prefect_server:
+  # 3. Pipeline Orchestrator (Port shifted to 4205)
+  omni_prefect:
     image: prefecthq/prefect:3-latest
-    container_name: prefect_server
+    container_name: omni_prefect
     command: prefect server start --host 0.0.0.0
     environment:
-      - PREFECT_UI_API_URL=http://localhost:4201/api
+      - PREFECT_UI_API_URL=http://localhost:4205/api
     ports:
-      - "4201:4200"
+      - "4205:4200"
     networks:
-      - data_network
+      - omni_network
 
-  # 4. Interactive Dev Environment
-  jupyter:
+  # 4. Interactive Dev Environment (Port shifted to 8890)
+  omni_jupyter:
     image: jupyter/scipy-notebook:latest
-    container_name: jupyter_dev
+    container_name: omni_jupyter
     user: root
     environment:
       - JUPYTER_TOKEN=prefect
@@ -281,34 +260,34 @@ services:
     volumes:
       - .:/home/jovyan/work
     ports:
-      - "8088:8888"
+      - "8890:8888"
     networks:
-      - data_network
+      - omni_network
 
-  # 5. One-Time Pipeline Runner
-  etl_runner:
+  # 5. Pipeline Runner
+  omni_etl_runner:
     build: .
-    container_name: etl_runner
+    container_name: omni_etl_runner
     depends_on:
-      postgres_dw:
+      omni_postgres:
         condition: service_healthy
-      prefect_server:
+      omni_prefect:
         condition: service_started
     environment:
-      - PREFECT_API_URL=http://prefect_server:4200/api
+      - PREFECT_API_URL=http://omni_prefect:4200/api
       - IN_DOCKER=true
       - POSTGRES_USER=engineer
       - POSTGRES_PASSWORD=password123
       - POSTGRES_DB=data_warehouse
     networks:
-      - data_network
+      - omni_network
 
 volumes:
-  dw_data:
-  metabase_data: 
+  omni_dw_data:
+  omni_metabase_data: 
 
 networks:
-  data_network:
+  omni_network:
     driver: bridge
 EOF
 
@@ -326,17 +305,17 @@ echo ""
 echo "🎉 DEPLOYMENT COMPLETE!"
 echo "-------------------------------------------------------"
 echo "🛠️  ACCESS LINKS:"
-echo "   - Metabase (Dashboards): http://localhost:3001"
-echo "   - Prefect (Pipelines):   http://localhost:4201"
-echo "   - Jupyter Notebook:      http://localhost:8088 (Password: prefect)"
+echo "   - Metabase (Dashboards): http://localhost:3050"
+echo "   - Prefect (Pipelines):   http://localhost:4205"
+echo "   - Jupyter Notebook:      http://localhost:8890 (Password: prefect)"
 echo ""
 echo "🗄️  DATABASE CONNECTION (DBeaver/pgAdmin):"
 echo "   - Host:     localhost"
-echo "   - Port:     5435"
+echo "   - Port:     5440"
 echo "   - Database: data_warehouse"
 echo "   - User:     engineer"
 echo "   - Pass:     password123"
 echo "-------------------------------------------------------"
 echo "💡 The ETL pipeline is currently running in the background."
-echo "You can view the logs by running: docker logs -f etl_runner"
+echo "You can view the logs by running: docker logs -f omni_etl_runner"
 echo "-------------------------------------------------------"
