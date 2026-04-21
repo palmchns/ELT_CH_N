@@ -33,10 +33,10 @@ requests
 EOF
 
 # ==========================================
-# 2. Generate ETL Pipeline Script
+# 2. Generate ELT Pipeline Script
 # ==========================================
-echo "🐍 Generating etl_pipeline.py..."
-cat << 'EOF' > etl_pipeline.py
+echo "🐍 Generating elt_pipeline.py..."
+cat << 'EOF' > elt_pipeline.py
 import pandas as pd
 from sqlalchemy import create_engine, text
 import os
@@ -189,7 +189,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-CMD ["python", "etl_pipeline.py"]
+CMD ["python", "elt_pipeline.py"]
 EOF
 
 # ==========================================
@@ -265,9 +265,9 @@ services:
       - omni_network
 
   # 5. Pipeline Runner
-  omni_etl_runner:
+  omni_elt_runner:
     build: .
-    container_name: omni_etl_runner
+    container_name: omni_elt_runner
     depends_on:
       omni_postgres:
         condition: service_healthy
@@ -316,6 +316,6 @@ echo "   - Database: data_warehouse"
 echo "   - User:     engineer"
 echo "   - Pass:     password123"
 echo "-------------------------------------------------------"
-echo "💡 The ETL pipeline is currently running in the background."
-echo "You can view the logs by running: docker logs -f omni_etl_runner"
+echo "💡 The ELT pipeline is currently running in the background."
+echo "You can view the logs by running: docker logs -f omni_elt_runner"
 echo "-------------------------------------------------------"
