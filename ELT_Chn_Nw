@@ -3,7 +3,7 @@ set -e
 
 # ==============================================================================
 # PROJECT: OmniCorp ELT Data Stack (Full Kimball Star Schema Edition)
-# DESCRIPTION: One-Click Setup with complete ER Diagram mapping
+# DESCRIPTION: One-Click Setup with complete ER Diagram mapping & Prefect Deployment
 # ==============================================================================
 
 PROJECT_DIR="omnicorp_data_stack"
@@ -56,20 +56,18 @@ DB_PORT = "5432" if os.getenv("IN_DOCKER") else "5440"
 PG_URI = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_DB}"
 
 # ==========================================
-# 🥉 Task 1: Extract & Load to Bronze
+# 🥉 Task 1: Extract & Load to Bronze (Dynamic Full Load)
 # ==========================================
 @task(log_prints=True, retries=2)
 def load_raw_to_postgres():
     sources = {
-        "chinook": ("https://raw.githubusercontent.com/lerocha/chinook-database/master/ChinookDatabase/DataSources/Chinook_Sqlite.sqlite", 
-                    ["Customer", "Track", "Genre", "Invoice", "InvoiceLine", "Employee"]),
-        "nw": ("https://github.com/jpwhite3/northwind-SQLite3/raw/main/dist/northwind.db", 
-               ["Customers", "Products", "Categories", "Orders", "Order Details", "Employees"])
+        "chinook": "https://raw.githubusercontent.com/lerocha/chinook-database/master/ChinookDatabase/DataSources/Chinook_Sqlite.sqlite",
+        "nw": "https://github.com/jpwhite3/northwind-SQLite3/raw/main/dist/northwind.db"
     }
     
     target_engine = create_engine(PG_URI)
 
-    for prefix, (url, tables) in sources.items():
+    for prefix, url in sources.items():
         print(f"📥 Downloading {prefix} database...")
         r = requests.get(url)
         
@@ -78,7 +76,14 @@ def load_raw_to_postgres():
             tmp.flush()
             src_engine = create_engine(f"sqlite:///{tmp.name}")
             
+            # Fetch all tables dynamically
+            tables_df = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table';", src_engine)
+            tables = tables_df['name'].tolist()
+            
             for table in tables:
+                if table.startswith('sqlite_'):
+                    continue  # Skip internal SQLite tables
+                    
                 print(f"⏳ Extracting raw {table}...")
                 df = pd.read_sql(f'SELECT * FROM "{table}"', src_engine)
                 df.columns = [c.lower().replace(' ', '_') for c in df.columns]
@@ -246,13 +251,18 @@ def transform_star_schema_in_db():
 # ==========================================
 #  Orchestration Flow
 # ==========================================
-@flow(name="One-Time OmniCorp Initial Load (Full ERD)")
+@flow(name="OmniCorp ELT Pipeline (Full ERD)")
 def main_flow():
     load_raw_to_postgres()
     transform_star_schema_in_db()
 
 if __name__ == "__main__":
+    print("🚀 Starting Initial Automatic Run...")
     main_flow()
+    
+    print("📡 Deploying to Prefect Server and waiting for Quick Runs...")
+    # การใช้ .serve() จะช่วยให้โชว์ในแท็บ Deployment และเปิดสแตนด์บายไว้
+    main_flow.serve(name="OmniCorp-Manual-Trigger", tags=["ELT", "DataWarehouse"])
 EOF
 
 # ==========================================
@@ -375,6 +385,7 @@ docker compose up -d
 echo ""
 echo "🎉 DEPLOYMENT COMPLETE!"
 echo "-------------------------------------------------------"
-echo "💡 The ELT pipeline is currently running in the background."
-echo "You can view the logs by running: docker logs -f omni_elt_runner"
+echo "💡 The ELT pipeline is currently running its initial load."
+echo "After finishing, it will stay online for Manual Quick Runs."
+echo "You can check the UI at http://localhost:4205"
 echo "-------------------------------------------------------"
