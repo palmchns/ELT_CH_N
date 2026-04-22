@@ -382,10 +382,12 @@ echo "-------------------------------------------------------"
 
 docker compose up -d
 
-echo ""
+echo echo ""
 echo "🎉 DEPLOYMENT COMPLETE!"
 echo "-------------------------------------------------------"
 echo "💡 The ELT pipeline is currently running its initial load."
 echo "After finishing, it will stay online for Manual Quick Runs."
-echo "You can check the UI at http://localhost:4205"
+echo "📊 Metabase UI:       http://localhost:3050"
+echo "🌊 Prefect UI:        http://localhost:4205"
+echo "📓 Jupyter Notebook:  http://localhost:8890 (Token: prefect)"
 echo "-------------------------------------------------------"
