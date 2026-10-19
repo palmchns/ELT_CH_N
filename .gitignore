@@ -1,0 +1,12 @@
+__pycache__/
+.ipynb_checkpoints/
+*.py[cod]
+.DS_Store
+.env
+.env.*
+!.env.example
+.secrets/
+obs_data/
+backups/
+.venv/
+*.log

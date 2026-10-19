@@ -1,0 +1,9 @@
+# Direct dependencies. Resolve, lock, audit, and test before promotion.
+prefect==3.8.8
+pandas==2.3.3
+duckdb==1.5.1
+pyarrow==23.0.1
+requests==2.34.2
+numpy==2.2.6
+python-dateutil==2.9.0.post0
+psycopg[binary]==3.3.6

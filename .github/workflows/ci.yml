@@ -1,0 +1,107 @@
+name: Pipeline validation
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  postgres-serving:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: warehouse_admin
+          POSTGRES_PASSWORD: disposable-ci-password
+          POSTGRES_DB: postgres
+        ports: ['55432:5432']
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U warehouse_admin -d postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    defaults:
+      run:
+        working-directory: omnicorp_data_stack_v2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install --require-hashes -r requirements.lock
+      - run: python -m unittest discover -s tests -p test_serving.py -v
+        env:
+          RUN_POSTGRES_INTEGRATION: '1'
+          BI_HOST: 127.0.0.1
+          BI_PORT: '55432'
+          POSTGRES_TEST_PASSWORD: disposable-ci-password
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: pypa/gh-action-pip-audit@v1.1.0
+        with:
+          inputs: omnicorp_data_stack_v2/requirements.lock
+          no-deps: true
+  test-and-build:
+    runs-on: ubuntu-latest
+    env:
+      ELT_IMAGE: omnicorp-elt:ci
+    defaults:
+      run:
+        working-directory: omnicorp_data_stack_v2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: omnicorp_data_stack_v2/requirements.lock
+      - run: pip install --require-hashes -r requirements.lock
+      - run: pip check
+      - run: python -m unittest discover -s tests -v
+      - run: bash -n ELT_V2.sh
+      - run: bash ELT_V2.sh check
+      - run: docker build --tag omnicorp-elt:ci .
+      - name: Verify non-root image
+        run: docker run --rm --entrypoint python omnicorp-elt:ci -c "import os; assert os.getuid() == 10001"
+      - name: Provision ephemeral CI credential
+        run: |
+          python -m utils.provision_secrets
+          python - <<'PY'
+          from pathlib import Path
+          directory = Path('.secrets')
+          assert (directory / 'prefect_auth').is_file()
+          PY
+      - name: Start authenticated API
+        run: docker compose -f docker-compose.prod.yml up -d --no-build --wait prefect
+      - name: Verify authentication and CSRF client support
+        run: |
+          python - <<'PY'
+          import asyncio
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+          import requests
+          response = requests.get('http://127.0.0.1:4206/api/version', timeout=10)
+          assert response.status_code == 401, response.status_code
+          os.environ['PREFECT_API_URL'] = 'http://127.0.0.1:4206/api'
+          os.environ['PREFECT_API_AUTH_STRING'] = Path('.secrets/prefect_auth').read_text()
+          os.environ.pop('PREFECT_API_KEY', None)
+          from prefect.client.orchestration import get_client
+          async def verify():
+              async with get_client() as client:
+                  await client.read_flows()
+          asyncio.run(verify())
+          os.environ['RUN_PREFECT_INTEGRATION'] = '1'
+          subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', 'tests',
+                          '-p', 'test_prefect_runtime.py', '-v'], check=True)
+          PY
+      - name: Start Metabase application with PostgreSQL metadata storage
+        run: |
+          docker compose -f docker-compose.prod.yml up -d --no-build --wait warehouse
+          docker compose -f docker-compose.prod.yml run --rm --no-deps bi_init
+          docker compose -f docker-compose.prod.yml up -d --no-build --no-deps --wait metabase
+      - name: Clean isolated CI services
+        if: always()
+        run: docker compose -f docker-compose.prod.yml --profile jobs down --volumes
