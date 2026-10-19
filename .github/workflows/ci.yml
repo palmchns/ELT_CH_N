@@ -21,7 +21,7 @@ jobs:
         working-directory: omnicorp_data_stack_v2
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
       - run: pip install --require-hashes -r requirements.lock
@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
       - uses: pypa/gh-action-pip-audit@v1.1.0
@@ -51,7 +51,7 @@ jobs:
         working-directory: omnicorp_data_stack_v2
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
           cache: pip
