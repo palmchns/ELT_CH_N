@@ -1,5 +1,5 @@
 # Direct dependencies. Resolve, lock, audit, and test before promotion.
-prefect==3.8.8
+prefect==3.9.0
 pandas==2.3.3
 duckdb==1.5.1
 pyarrow==23.0.1
